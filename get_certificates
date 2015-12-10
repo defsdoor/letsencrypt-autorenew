@@ -1,0 +1,201 @@
+#!/bin/bash
+#
+
+LEDIR=/opt/letsencrypt
+CONF_FILE=/etc/letsencrypt/mycerts
+LEROOT=/etc/letsencrypt/live
+RENEW_DAYS_LEFT=8
+
+function die {
+  echo "$*"
+  exit 1
+}
+
+function generate {
+  typeset EMAIL="$1"
+  typeset HOSTS="$2"
+
+  CMD=""
+  for H in $HOSTS
+  do
+    CMD="$CMD -d $H"
+  done
+
+  ./letsencrypt-auto certonly --renew-by-default --agree-tos --webroot --email $EMAIL $CMD --webroot-path /var/www/content/letsencrypt
+}
+
+function check_same_hosts {
+  typeset CERT="$1"
+  typeset HOSTS="$2"
+
+  CERT_HOSTS="$(get_hosts_from_cert $CERT)"
+  SORTED_CERT_HOSTS="$(sort_hosts "$CERT_HOSTS")"
+  SORTED_HOSTS="$(sort_hosts "$HOSTS")"
+
+  if [[ "$SORTED_HOSTS" == "$SORTED_CERT_HOSTS" ]]
+  then
+    return 0
+  else
+    return 1
+  fi
+}
+
+function check_expiring_soon {
+  typeset CERT="$1"
+
+  EXPIRY_DATE=$(date -d "$(openssl x509 -in $CERTIFICATE -text | sed '/Not After/{s/^.*: //g;p};d')" '+%Y%m%d%H%M%S')
+  typeset RENEW_DATE=$(date -d "now +$RENEW_DAYS_LEFT days"  '+%Y%m%d%H%M%S')
+
+  if [[ $EXPIRY_DATE < $RENEW_DATE ]]
+  then
+    return 1
+  else
+    return 0
+  fi
+}
+
+function sort_hosts {
+  typeset HOSTS="$1"
+  echo "$HOSTS" | sed -r 's/[[:blank:]]+/\n/g' | sort -u
+}
+
+function get_hosts_from_cert {
+  typeset CERT=$1
+
+ openssl x509 -in $CERT -text  |
+ sed -e '/X509v3 Subject Alternative Name/,/DNS/!d;/X509v3 Subject/d;s/DNS:\([^, \n]*\)/\1/g;s/[[:blank:]]//g;s/,/ /g'
+}
+
+function check_update_required {
+  typeset EMAIL="$1"
+  typeset HOSTS="$2"
+
+  typeset -i UPDATE_REQUIRED=0
+
+  set $HOSTS
+
+  MAIN_HOST=$1
+  CERTIFICATE=$LEROOT/$MAIN_HOST/cert.pem
+
+  if [[ ! -d $LEROOT/$MAIN_HOST || ! -f $CERTIFICATE ]]
+  then
+    echo "Update required - certificate missing"
+    UPDATE_REQUIRED=1
+  else
+    check_same_hosts "$CERTIFICATE" "$HOSTS"
+    UPDATE_REQUIRED=$?
+
+    if ((UPDATE_REQUIRED==0))
+    then
+      check_expiring_soon $CERTIFICATE
+      UPDATE_REQUIRED=$?
+      if ((UPDATE_REQUIRED==1))
+      then
+        echo "Update required - certificate expiring soon ($EXPIRY_DATE)"
+      else
+        echo "$MAIN_HOST - up to date"
+      fi
+    else
+      DIFFERENCE=$(diff <(echo "$SORTED_HOSTS") <(echo "$SORTED_CERT_HOSTS") | egrep "^[<>]" )
+      echo "Update required - hosts differ $DIFFERENCE"
+    fi
+  fi
+
+  return $UPDATE_REQUIRED
+}
+
+function process {
+  typeset EMAIL="$1"
+  typeset HOSTS=$2
+
+  if ! check_update_required "$EMAIL" "$HOSTS"
+  then
+    generate "$EMAIL" "$HOSTS"
+  fi
+  
+}
+
+function read_conf {
+
+  while read LINE
+  do
+    [[ -z "$LINE" ]] && continue
+    [[ "$LINE" = \#* ]] && continue
+    set $LINE
+    case "$1" in
+      "EMAIL") 
+        [[ ! -z "$HOSTS" ]] && process "$EMAIL" "$HOSTS"
+        HOSTS=""
+        EMAIL=$2 ;;
+      "HOSTS") 
+        [[ ! -z "$HOSTS" ]] && process "$EMAIL" "$HOSTS"
+        shift
+         HOSTS="$*" ;;
+      *) HOSTS="$HOSTS $*" ;;
+    esac
+  done < $CONF_FILE
+
+  process "$EMAIL" "$HOSTS"
+}
+
+echo "Entering $LEDIR"
+cd $LEDIR || die "Could not change directory into $DIR" 
+
+echo "Updating from git"
+git pull || die "Git pull returned unexpectedly"
+
+read_conf
+
+exit
+
+# Webmail
+#
+./letsencrypt-auto certonly --renew-by-default --agree-tos --webroot --email admin@plingit.co.uk -d webmail.plingit.co.uk --webroot-path /var/www/content/letsencrypt
+
+# brokers app
+#
+./letsencrypt-auto certonly --renew-by-default --agree-tos --webroot --email admin@autoclaims.co.uk -d brokers.autoclaims.co.uk --webroot-path /var/www/content/letsencrypt
+
+# Dovecot/imap & smtp & webmail combined
+./letsencrypt-auto certonly --renew-by-default --agree-tos --webroot --email admin@plingit.co.uk --webroot-path /var/www/content/letsencrypt \
+  -d webmail.plingit.co.uk -d imap.plingit.co.uk -d smtp.plingit.co.uk \
+  -d webmail.3rdeyecc.tv -d imap.3rdeyecc.tv -d smtp.3rdeyecc.tv \
+  -d webmail.alfburch.com -d imap.alfburch.com -d smtp.alfburch.com \
+  -d webmail.cjfarms.co.uk -d imap.cjfarms.co.uk -d smtp.cjfarms.co.uk \
+  -d webmail.clowery.me.uk -d imap.clowery.me.uk -d smtp.clowery.me.uk \
+  -d webmail.defsdoor.org -d imap.defsdoor.org -d smtp.defsdoor.org \
+  -d webmail.elizabethryan.org -d imap.elizabethryan.org -d smtp.elizabethryan.org \
+  -d webmail.e-solv.co.uk -d imap.e-solv.co.uk -d smtp.e-solv.co.uk \
+  -d webmail.foxcellular.co.uk -d imap.foxcellular.co.uk -d smtp.foxcellular.co.uk \
+  -d webmail.foxmeistercars.com -d imap.foxmeistercars.com -d smtp.foxmeistercars.com \
+  -d webmail.gossketeers.com -d imap.gossketeers.com -d smtp.gossketeers.com \
+  -d webmail.innovationsystems.co.uk -d imap.innovationsystems.co.uk -d smtp.innovationsystems.co.uk \
+  -d webmail.kevinperry.co.uk -d imap.kevinperry.co.uk -d smtp.kevinperry.co.uk \
+  -d webmail.ljcelectrical.com -d imap.ljcelectrical.com -d smtp.ljcelectrical.com \
+  -d webmail.mgscomms.co.uk -d imap.mgscomms.co.uk -d smtp.mgscomms.co.uk \
+  -d webmail.nigelfox.com -d imap.nigelfox.com -d smtp.nigelfox.com \
+  -d webmail.opttochange.co.uk -d imap.opttochange.co.uk -d smtp.opttochange.co.uk \
+  -d webmail.priestleyfarms.com -d imap.priestleyfarms.com -d smtp.priestleyfarms.com \
+  -d webmail.ptrdesign.co.uk -d imap.ptrdesign.co.uk -d smtp.ptrdesign.co.uk \
+  -d webmail.rwlawrance.com -d imap.rwlawrance.com -d smtp.rwlawrance.com \
+  -d webmail.secland.com -d imap.secland.com -d smtp.secland.com \
+  -d webmail.tansingh.com -d smtp.tansingh.com \
+  -d webmail.theporterfamily.co.uk -d imap.theporterfamily.co.uk -d smtp.theporterfamily.co.uk \
+  -d webmail.tslmanagementsolutions.co.uk -d imap.tslmanagementsolutions.co.uk -d smtp.tslmanagementsolutions.co.uk \
+  -d webmail.ukgear.com -d imap.ukgear.com -d smtp.ukgear.com
+
+cp /etc/letsencrypt/live/webmail.plingit.co.uk/fullchain.pem /etc/ssl/certs/mail.pem
+cp /etc/letsencrypt/live/webmail.plingit.co.uk/privkey.pem /etc/ssl/private/mail.pem
+chmod 644 /etc/ssl/certs/mail.pem
+chgrp ssl-cert /etc/ssl/certs/mail.pem
+chmod 640 /etc/ssl/private/mail.pem
+chgrp ssl-cert /etc/ssl/certs/mail.pem
+
+# Create single haproxy bundle
+cat /etc/letsencrypt/live/webmail.plingit.co.uk/fullchain.pem /etc/letsencrypt/live/webmail.plingit.co.uk/privkey.pem > /etc/letsencrypt/live/webmail.plingit.co.uk/haproxy.pem
+
+cat /etc/letsencrypt/live/brokers.autoclaims.co.uk/fullchain.pem /etc/letsencrypt/live/brokers.autoclaims.co.uk/privkey.pem > /etc/letsencrypt/live/brokers.autoclaims.co.uk/haproxy.pem
+
+
+# Reload haproxy
+service haproxy reload
