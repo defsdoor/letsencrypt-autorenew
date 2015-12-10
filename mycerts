@@ -1,6 +1,5 @@
-EMAIL admin@exmaple.com
+EMAIL admin@example.com
 HOSTS www.example.com
 EMAIL admin@mail.example.com
 HOSTS mail.example.com
   imap.example.com pop3.example.com smtp.example.com
-
